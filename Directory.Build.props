@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <MIMESIS_DIR Condition="'$(MIMESIS_DIR)' == ''">E:\SteamLibrary\steamapps\common\MIMESIS</MIMESIS_DIR>
+  </PropertyGroup>
+</Project>

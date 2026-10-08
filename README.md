@@ -1,0 +1,37 @@
+# MIMESIS Rework
+
+Набор независимых модулей для MIMESIS на MelonLoader. Исходники можно собирать и развивать отдельно; игровые DLL и дамп Assembly-CSharp в репозиторий не входят.
+
+## Модули
+
+- **Core** — тестовая панель разработчика, F8, инструменты быстрого тестирования.
+- **Loot** — дроп с монстров.
+- **Market** — дополнительные автоматы и случайная раскладка ванильного ассортимента.
+- **Progression** — расходуемые улучшения здоровья и выносливости.
+- **Medical** — полевые медицинские эффекты.
+- **MimesisTestMod** — исходный ранний тестовый мод.
+
+## Требования
+
+- Windows и .NET SDK 10.0.400 (версия закреплена в `global.json`).
+- MIMESIS с MelonLoader 0.7.3.
+- Установленная копия игры для ссылок на `Assembly-CSharp.dll`, Unity assemblies и MelonLoader assemblies.
+
+По умолчанию сборка использует `E:\SteamLibrary\steamapps\common\MIMESIS`. Для другого расположения задай переменную окружения `MIMESIS_DIR` до запуска `dotnet build`.
+
+```powershell
+$env:MIMESIS_DIR = 'D:\Games\MIMESIS'
+dotnet build .\MimesisRework.sln --configuration Release
+```
+
+Каждый модуль собирается в `ИмяПроекта\bin\Release\netstandard2.1\`. Готовые DLL текущей сборки находятся в `release\`.
+
+## Установка
+
+Скопируй нужные `MimesisRework.*.dll` из `release\` в папку `MIMESIS\Mods\`. Перед использованием на сетевом хосте установи соответствующие модули на хост; для отображения новых предметов у игроков должна совпадать версия модов.
+
+## Сторонний код
+
+Логика дропа основана на EnemyDropLoot от DooDesch. Исходный код, уведомление об адаптации и лицензия MIT сохранены в `_EnemyDropLoot-upstream\` и `MimesisTestMod\EnemyDropLoot\`.
+
+Игровые файлы, включая `Assembly-CSharp.dll`, игровые мастер-данные, Unity bundles, логи и локальные резервные DLL не включаются. Они остаются локальными; MSBuild берёт ссылки на них из установленной игры.

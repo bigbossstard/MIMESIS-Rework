@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.log
+MelonLoader/
+Mods/
+Assembly-CSharp.dll
+MIMESIS_Data/
+*_before*.dll
+*.before-*.dll
+*.previous.dll
+*.dll.disabled

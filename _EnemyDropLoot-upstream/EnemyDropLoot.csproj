@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!-- Shared build layer. Two lines per props file, and only one of them ever matches: locally
+	     Workspace is a sibling of this folder, in CI it is checked out INTO this repo. -->
+	<Import Project="$(MSBuildThisFileDirectory)../Workspace/build/GameRefs.props" Condition="Exists('$(MSBuildThisFileDirectory)../Workspace/build/GameRefs.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)Workspace/build/GameRefs.props" Condition="Exists('$(MSBuildThisFileDirectory)Workspace/build/GameRefs.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)../Workspace/build/Deploy.props" Condition="Exists('$(MSBuildThisFileDirectory)../Workspace/build/Deploy.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)Workspace/build/Deploy.props" Condition="Exists('$(MSBuildThisFileDirectory)Workspace/build/Deploy.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)../Workspace/build/Hardening.props" Condition="Exists('$(MSBuildThisFileDirectory)../Workspace/build/Hardening.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)Workspace/build/Hardening.props" Condition="Exists('$(MSBuildThisFileDirectory)Workspace/build/Hardening.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)../Workspace/build/MimicAPI.props" Condition="Exists('$(MSBuildThisFileDirectory)../Workspace/build/MimicAPI.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)Workspace/build/MimicAPI.props" Condition="Exists('$(MSBuildThisFileDirectory)Workspace/build/MimicAPI.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)../Workspace/build/ModVersion.props" Condition="Exists('$(MSBuildThisFileDirectory)../Workspace/build/ModVersion.props')" />
+	<Import Project="$(MSBuildThisFileDirectory)Workspace/build/ModVersion.props" Condition="Exists('$(MSBuildThisFileDirectory)Workspace/build/ModVersion.props')" />
+
+	<PropertyGroup>
+		<TargetFramework>netstandard2.1</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<RootNamespace>EnemyDropLoot</RootNamespace>
+		<LangVersion>latest</LangVersion>
+		<IsPackable>false</IsPackable>
+		<NeutralLanguage>en-US</NeutralLanguage>
+		<AssemblyName>EnemyDropLoot</AssemblyName>
+		<!-- The real version comes from the release tag as -p:Version and reaches MelonInfo through
+		     DooDesch.ModVersion.Current (Workspace/build/ModVersion.props). -->
+		<Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
+	</PropertyGroup>
+
+	<!-- On top of the five in GameRefs.props. Here because the compiler named it: a game type in a
+	     patched signature is declared with ImmutableDictionary. The game ships the assembly, so the
+	     reference points at the same copy the game loads rather than at a NuGet package. -->
+	<ItemGroup>
+		<Reference Include="System.Collections.Immutable">
+			<HintPath>$(GameManagedPath)/System.Collections.Immutable.dll</HintPath>
+		</Reference>
+	</ItemGroup>
+
+	<!-- Only Debugging/DebugTools.cs needs these, and that file sits behind #if DEBUG - so a
+	     Release build compiles without them and a Debug build does not. Unconditional on purpose:
+	     an unused reference costs nothing, while making them Debug-only would put the two
+	     configurations one edit apart again. -->
+	<ItemGroup>
+		<Reference Include="Unity.InputSystem">
+			<HintPath>$(GameManagedPath)/Unity.InputSystem.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.IMGUIModule">
+			<HintPath>$(GameManagedPath)/UnityEngine.IMGUIModule.dll</HintPath>
+		</Reference>
+	</ItemGroup>
+
+</Project>

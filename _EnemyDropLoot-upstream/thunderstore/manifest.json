@@ -1,0 +1,14 @@
+{
+  "name": "EnemyDropLoot",
+  "version_number": "0.0.0",
+  "website_url": "https://github.com/DooDesch/Mimesis-EnemyDropLoot",
+  "description": "Makes dungeon enemies drop loot that matches the current map's spawn pool.",
+  "dependencies": [
+    "LavaGang-MelonLoader-0.7.3",
+    "NeoMimicry-MimicAPI-0.3.0"
+  ],
+  "contributors": [
+    "DooDesch"
+  ]
+}
+

@@ -1,0 +1,96 @@
+# Baut bei jedem Push und jedem Pull Request - nicht erst beim Tag.
+#
+# Vorher gab es CI ausschliesslich auf `v*`-Tags. Ein Fehler fiel damit fruehestens beim Release
+# auf, und zweimal in Folge fiel er dort auch wirklich auf: ein Referenzblock, der nur gegen
+# Release geprueft war und im Debug-Build nicht mehr uebersetzte, und ein Pfad zu MimicAPI, der
+# seit einer Umstrukturierung ins Leere zeigte.
+#
+# Beide Konfigurationen, mit Absicht. Dateien hinter `#if DEBUG` fallen im Release-Build weg, also
+# prueft ein reiner Release-Build genau die Stellen nicht, an denen Entwicklerwerkzeug liegt.
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout Workspace repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/Mimesis-Workspace
+          path: Workspace
+          ssh-key: ${{ secrets.WORKSPACE_TOKEN }}
+
+      - name: Checkout MimicAPI repository
+        uses: actions/checkout@v4
+        with:
+          # MimicAPI ist ein oeffentlicher Fork auf dem persoenlichen Konto, nicht in der Org, in
+          # die die Mod-Repos gewandert sind. github.repository_owner loeste hier auf ein Repo auf,
+          # das es nicht gibt.
+          repository: DooDesch/MimicAPI
+          path: Workspace/MimicAPI
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build ${{ matrix.configuration }}
+        run: |
+          # DeployVerifyDisable, weil hier nichts ausgeliefert wird: der Riegel vergleicht sonst
+          # gegen einen Zielordner, den es auf einem Runner gar nicht gibt.
+          dotnet build EnemyDropLoot.csproj \
+            --configuration ${{ matrix.configuration }} \
+            -p:DeployVerifyDisable=true \
+            -p:WorkspaceLibPath="${{ github.workspace }}/Workspace/lib" \
+            -p:GameManagedPath="${{ github.workspace }}/Workspace/lib/game" \
+            -p:GameAssemblyPath="${{ github.workspace }}/Workspace/lib/game" \
+            -p:MelonLoaderPath="${{ github.workspace }}/Workspace/lib/melonloader" \
+            -p:MimicAPIPath="${{ github.workspace }}/Workspace/MimicAPI" \
+            -warnaserror:CS0618 \
+            /clp:Summary
+
+      - name: Guard the release placeholders
+        if: matrix.configuration == 'Release'
+        run: |
+          # Die Version kommt aus dem Tag. Eine echte Zahl in einer der beiden Dateien kann nur von
+          # Hand hineingeschrieben worden sein und weicht spaetestens beim naechsten Release ab -
+          # dann steht im Attribut etwas anderes als auf der Paketseite, und nur das Attribut wird
+          # gelesen.
+          CS_VERSION=$(grep -oPm1 '<Version[^>]*>\K[^<]+' EnemyDropLoot.csproj || true)
+          if [ -n "$CS_VERSION" ] && [ "$CS_VERSION" != "0.0.0-dev" ]; then
+            echo "::error file=EnemyDropLoot.csproj::Version '$CS_VERSION' steht im Repo. Sie kommt aus dem Tag; hier gehoert 0.0.0-dev hin."
+            exit 1
+          fi
+
+          MANIFEST_VERSION=$(grep -oPm1 '(?<="version_number": ")[^"]+' thunderstore/manifest.json || true)
+          if [ "$MANIFEST_VERSION" != "0.0.0" ]; then
+            echo "::error file=thunderstore/manifest.json::version_number '$MANIFEST_VERSION' steht im Repo. Die CI schreibt die echte Zahl beim Release."
+            exit 1
+          fi
+
+          if ! grep -q 'ModVersion.Current' Core.cs; then
+            echo "::error file=Core.cs::MelonInfo liest ModVersion.Current nicht. MelonLoader und jeder Mod-Manager lesen nur dieses Attribut."
+            exit 1
+          fi
