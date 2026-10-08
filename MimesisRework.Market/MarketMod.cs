@@ -25,8 +25,8 @@ namespace MimesisRework.Market
         private static readonly int[] UpgradeShopGroups = { 19001, 19002, 19003, 19004, 19005, 19006, 19007, 19008 };
         private const int TrialMachineCount = 4;
         private const float TrialRowOffset = 3.2f;
-        private const float DisplayTargetMaxSize = 0.38f;
-        private const float DisplayMinSize = 0.20f;
+        private const float DisplayTargetSize = 0.38f;
+        private const float MaximumDisplayUpscale = 1.75f;
         private const string TrialMachineNamePrefix = "MimesisRework_TrialVending_";
         private static readonly FieldInfo PdataField = AccessTools.Field(typeof(Hub), "pdata");
         private static readonly PropertyInfo DataManagerProperty = AccessTools.Property(typeof(Hub), "dataman");
@@ -74,12 +74,14 @@ namespace MimesisRework.Market
 
             int targetCount = Math.Min(TrialMachineCount, vanillaMachines.Count);
             int cloneCount = 0;
+            VendingMachineLevelObject machineTemplate = vanillaMachines[0];
             for (int i = 0; i < targetCount; i++)
             {
                 try
                 {
                     VendingMachineLevelObject source = vanillaMachines[i];
-                    GameObject cloneObject = UnityEngine.Object.Instantiate(source.gameObject, rootNode, true);
+                    Transform templateParent = machineTemplate.transform.parent;
+                    GameObject cloneObject = UnityEngine.Object.Instantiate(machineTemplate.gameObject, templateParent, false);
                     cloneObject.name = TrialMachineNamePrefix + (i + 1);
                     VendingMachineLevelObject clone = cloneObject.GetComponent<VendingMachineLevelObject>();
                     if (clone == null)
@@ -92,6 +94,7 @@ namespace MimesisRework.Market
                     // Put a second row farther out and face it toward the original row, leaving an aisle between the fronts.
                     clone.transform.position = source.transform.position + source.transform.forward * TrialRowOffset;
                     clone.transform.rotation = Quaternion.AngleAxis(180f, Vector3.up) * source.transform.rotation;
+                    clone.transform.localScale = machineTemplate.transform.localScale;
                     cloneCount++;
                     MelonLogger.Msg("Created trial vending clone " + clone.name + " beside source machine " + source.levelObjectID + ".");
                 }
@@ -121,7 +124,6 @@ namespace MimesisRework.Market
             if (key == _lastClientRoll) return;
             if (!ApplyAssignments(key, out string diagnostic)) return;
             _lastClientRoll = key;
-            foreach (VendingMachineLevelObject machine in GetMachines()) machine.Refresh();
             ValidateClientPriceRoutes(pdata);
             LoggerInstance.Msg("Depot stock for " + key + ": " + diagnostic);
         }
@@ -207,6 +209,12 @@ namespace MimesisRework.Market
                 if (machine.name.StartsWith(TrialMachineNamePrefix, StringComparison.Ordinal)) upgradeMachines.Add(machine);
                 else vanillaMachines.Add(machine);
             }
+            if (vanillaMachines.Count != 4 || upgradeMachines.Count != TrialMachineCount)
+            {
+                MelonLogger.Warning("Depot stock assignment skipped: expected 4 randomized vanilla machines and " +
+                    TrialMachineCount + " upgrade copies, found " + vanillaMachines.Count + " and " + upgradeMachines.Count + ".");
+                return false;
+            }
 
             var available = new List<int>();
             foreach (int groupId in VanillaShopGroups)
@@ -277,13 +285,26 @@ namespace MimesisRework.Market
                 if (Data?.ExcelDataManager.ShopGroupDict.TryGetValue(selectedVanilla[i], out row) == true && row != null)
                     descriptions.Add(vanillaMachines[i].levelObjectID + "→vanilla group " + selectedVanilla[i] + "/item " + row.item_masterid);
             }
+            foreach (VendingMachineLevelObject machine in upgradeMachines)
+                machine.Refresh();
+            foreach (VendingMachineLevelObject machine in vanillaMachines)
+                machine.Refresh();
             diagnostic = string.Join(", ", descriptions);
             return true;
         }
 
         private static List<VendingMachineLevelObject> GetMachines()
         {
-            var result = new List<VendingMachineLevelObject>(UnityEngine.Object.FindObjectsOfType<VendingMachineLevelObject>());
+            GameMainBase main = Pdata?.main as GameMainBase;
+            Transform depotRoot = main is MaintenanceScene ? main.GetBGRoot() : null;
+            if (depotRoot == null) return new List<VendingMachineLevelObject>();
+
+            var result = new List<VendingMachineLevelObject>();
+            foreach (VendingMachineLevelObject machine in UnityEngine.Object.FindObjectsByType<VendingMachineLevelObject>(FindObjectsSortMode.None))
+            {
+                if (machine != null && machine.transform.IsChildOf(depotRoot))
+                    result.Add(machine);
+            }
             result.Sort((a, b) => a.levelObjectID.CompareTo(b.levelObjectID));
             return result;
         }
@@ -322,8 +343,6 @@ namespace MimesisRework.Market
             private static void Postfix(MaintenanceRoom __instance) => ValidateServerPriceRoutes(__instance);
         }
 
-        // Vanilla only shows the original display prop when the item is not skinned.
-        // For randomized stock, always show the actual item's existing prefab.
         [HarmonyPatch(typeof(VendingMachineLevelObject), "SetVendingMachineItemProcess")]
         private static class VendingDisplayPatch
         {
@@ -349,43 +368,197 @@ namespace MimesisRework.Market
 
             ShopGroup_MasterData row;
             if (Data?.ExcelDataManager.ShopGroupDict.TryGetValue(machine.shopGroupID, out row) != true || row == null)
+            {
+                if (vanillaRoot != null) vanillaRoot.gameObject.SetActive(true);
                 yield break;
+            }
             ValueTuple<ItemMasterInfo, int, float> priceInfo;
-            if (!pdata.itemPrices.TryGetValue(row.item_masterid, out priceInfo)) yield break;
+            if (!pdata.itemPrices.TryGetValue(row.item_masterid, out priceInfo))
+            {
+                if (vanillaRoot != null) vanillaRoot.gameObject.SetActive(true);
+                yield break;
+            }
 
             var spawned = pdata.main.TrySpawnItemObject(row.item_masterid, itemRoot);
             GameObject actualItem = spawned.Item2;
             if (actualItem != null)
             {
                 SpawnedItemField?.SetValue(machine, actualItem);
-                if (vanillaRoot != null) vanillaRoot.gameObject.SetActive(false);
-                yield return null;
-                NormalizeDisplayItemScale(actualItem, machine);
+                if (vanillaRoot != null)
+                {
+                    yield return null;
+                    FitDisplayItemToVanillaRoot(machine, actualItem, itemRoot, vanillaRoot,
+                        machine.name.StartsWith(TrialMachineNamePrefix, StringComparison.Ordinal));
+                    vanillaRoot.gameObject.SetActive(false);
+                }
+                MelonLogger.Msg("Vending display synced to assigned stock: " + machine.name +
+                    " group=" + machine.shopGroupID + " item=" + row.item_masterid +
+                    " model=" + actualItem.name + ".");
             }
             else if (vanillaRoot != null)
             {
                 vanillaRoot.gameObject.SetActive(true);
+                MelonLogger.Warning("Vending display prefab missing for " + machine.name +
+                    " group=" + machine.shopGroupID + " item=" + row.item_masterid + ".");
             }
         }
 
-        private static void NormalizeDisplayItemScale(GameObject item, VendingMachineLevelObject machine)
+        private static void FitDisplayItemToVanillaRoot(
+            VendingMachineLevelObject machine, GameObject item, Transform itemRoot, Transform vanillaRoot, bool isUpgradeBox)
         {
-            Renderer[] renderers = item.GetComponentsInChildren<Renderer>(true);
-            Bounds bounds = default(Bounds);
+            Bounds targetBounds;
+            if (!TryGetVisibleMeshBounds(vanillaRoot.gameObject, true, out targetBounds))
+            {
+                MelonLogger.Warning("Vanilla display mesh bounds unavailable for " + machine.name +
+                    "; showing the assigned item without display fitting.");
+                return;
+            }
+
+            Bounds originalBounds;
+            if (!TryGetVisibleMeshBoundsInRootSpace(item, out originalBounds))
+            {
+                MelonLogger.Warning("Assigned item mesh bounds unavailable for " + machine.name +
+                    " (" + item.name + "); showing its prefab unchanged.");
+                return;
+            }
+
+            item.transform.localRotation = GetCanonicalDisplayRotation(originalBounds.size);
+            Bounds orientedBounds;
+            if (!TryGetVisibleMeshBounds(item, false, out orientedBounds))
+            {
+                MelonLogger.Warning("Assigned item bounds could not be measured after display rotation for " + machine.name +
+                    " (" + item.name + "); showing its prefab unchanged.");
+                return;
+            }
+
+            float itemSize = MaxAxis(orientedBounds.size);
+            float targetSize = DisplayTargetSize;
+            if (itemSize <= 0.001f || targetSize <= 0.001f)
+            {
+                MelonLogger.Warning("Invalid display bounds for " + machine.name +
+                    ": item=" + itemSize.ToString("F3") + "m, target=" + targetSize.ToString("F3") + "m.");
+                return;
+            }
+
+            float scaleFactor = targetSize / itemSize;
+            if (!isUpgradeBox)
+                scaleFactor = Mathf.Min(MaximumDisplayUpscale, scaleFactor);
+            if (scaleFactor < 0.05f || scaleFactor > 20f)
+            {
+                MelonLogger.Warning("Unsafe display scale rejected for " + machine.name +
+                    ": item=" + item.name + ", target=" + targetSize.ToString("F3") +
+                    "m, item=" + itemSize.ToString("F3") + "m, factor=" + scaleFactor.ToString("F3") + ".");
+                return;
+            }
+
+            item.transform.localScale *= scaleFactor;
+            Bounds fittedBounds;
+            if (TryGetVisibleMeshBounds(item, false, out fittedBounds))
+                item.transform.position += targetBounds.center - fittedBounds.center;
+            else
+                item.transform.position += targetBounds.center - orientedBounds.center;
+
+            MelonLogger.Msg("Fitted vending display to its vanilla presentation: " + machine.name +
+                " item=" + item.name + ", target=" + (itemSize * scaleFactor).ToString("F2") +
+                "m, source=" + originalBounds.size.ToString("F2") + ", fitted=" + fittedBounds.size.ToString("F2") +
+                ", scale=" + scaleFactor.ToString("F2") +
+                (isUpgradeBox ? ", normalized upgrade box" : ", normal-item upscale capped at " + MaximumDisplayUpscale.ToString("F2") + "x") +
+                ", longest axis laid horizontally; item aligned to vending machine.");
+        }
+
+        private static Quaternion GetCanonicalDisplayRotation(Vector3 size)
+        {
+            int[] axes = { 0, 1, 2 };
+            Array.Sort(axes, (left, right) => Axis(size, right).CompareTo(Axis(size, left)));
+
+            Vector3 sourceRight = AxisVector(axes[0]);
+            Vector3 sourceUp = AxisVector(axes[1]);
+            Vector3 sourceForward = Vector3.Cross(sourceRight, sourceUp);
+            return Quaternion.Inverse(Quaternion.LookRotation(sourceForward, sourceUp));
+        }
+
+        private static bool TryGetVisibleMeshBoundsInRootSpace(GameObject root, out Bounds bounds)
+        {
+            Renderer[] renderers = root.GetComponentsInChildren<Renderer>(false);
+            Matrix4x4 rootInverse = root.transform.worldToLocalMatrix;
             bool found = false;
+            bounds = default(Bounds);
             foreach (Renderer renderer in renderers)
             {
-                if (renderer == null || !renderer.enabled) continue;
-                if (!found) { bounds = renderer.bounds; found = true; }
-                else bounds.Encapsulate(renderer.bounds);
+                if (renderer == null || !renderer.enabled ||
+                    (!(renderer is MeshRenderer) && !(renderer is SkinnedMeshRenderer)))
+                    continue;
+
+                Bounds localBounds = renderer.localBounds;
+                for (int mask = 0; mask < 8; mask++)
+                {
+                    Vector3 corner = localBounds.center + Vector3.Scale(localBounds.extents, new Vector3(
+                        (mask & 1) == 0 ? -1f : 1f,
+                        (mask & 2) == 0 ? -1f : 1f,
+                        (mask & 4) == 0 ? -1f : 1f));
+                    Vector3 rootPoint = rootInverse.MultiplyPoint3x4(renderer.transform.TransformPoint(corner));
+                    if (!found)
+                    {
+                        bounds = new Bounds(rootPoint, Vector3.zero);
+                        found = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(rootPoint);
+                    }
+                }
             }
-            if (!found) return;
-            float size = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
-            if (size <= 0.001f) return;
-            float target = Mathf.Clamp(size, DisplayMinSize, DisplayTargetMaxSize);
-            float factor = target / size;
-            item.transform.localScale *= factor;
-            MelonLogger.Msg("Normalized vending display item scale: " + machine.name + " model=" + item.name + ", maxBounds=" + size.ToString("F2") + "m, factor=" + factor.ToString("F2") + ".");
+            return found;
+        }
+
+        private static bool TryGetVisibleMeshBounds(GameObject root, bool includeInactive, out Bounds bounds)
+        {
+            Renderer[] renderers = root.GetComponentsInChildren<Renderer>(includeInactive);
+            bool found = false;
+            bounds = default(Bounds);
+            foreach (Renderer renderer in renderers)
+            {
+                if (renderer == null || !renderer.enabled ||
+                    (!includeInactive && !renderer.gameObject.activeInHierarchy) ||
+                    (includeInactive && !renderer.gameObject.activeSelf) ||
+                    (!(renderer is MeshRenderer) && !(renderer is SkinnedMeshRenderer)))
+                    continue;
+
+                Bounds localBounds = renderer.localBounds;
+                for (int mask = 0; mask < 8; mask++)
+                {
+                    Vector3 corner = localBounds.center + Vector3.Scale(localBounds.extents, new Vector3(
+                        (mask & 1) == 0 ? -1f : 1f,
+                        (mask & 2) == 0 ? -1f : 1f,
+                        (mask & 4) == 0 ? -1f : 1f));
+                    Vector3 worldPoint = renderer.transform.TransformPoint(corner);
+                    if (!found)
+                    {
+                        bounds = new Bounds(worldPoint, Vector3.zero);
+                        found = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(worldPoint);
+                    }
+                }
+            }
+            return found;
+        }
+
+        private static float MaxAxis(Vector3 value)
+        {
+            return Mathf.Max(value.x, Mathf.Max(value.y, value.z));
+        }
+
+        private static Vector3 AxisVector(int axis)
+        {
+            return axis == 0 ? Vector3.right : axis == 1 ? Vector3.up : Vector3.forward;
+        }
+
+        private static float Axis(Vector3 value, int axis)
+        {
+            return axis == 0 ? value.x : axis == 1 ? value.y : value.z;
         }
     }
 }

@@ -27,7 +27,8 @@ namespace MimesisRework.Progression
     {
         internal const int FirstItemId = 990101;
         internal const int FirstShopGroupId = 19001;
-        private const int PlaceholderModelSourceItemId = 3104;
+        private const string HealthBoxLootObjectId = "mimesis_upgrade_health_box";
+        private const string StaminaBoxLootObjectId = "mimesis_upgrade_stamina_box";
         private static readonly FieldInfo InventorySelfField = AccessTools.Field(typeof(InventoryController), "_self");
         private static readonly PropertyInfo ItemInfoDictProperty = AccessTools.Property(typeof(ExcelDataManager), "ItemInfoDict");
         private static readonly PropertyInfo ShopGroupDictProperty = AccessTools.Property(typeof(ExcelDataManager), "ShopGroupDict");
@@ -65,10 +66,16 @@ namespace MimesisRework.Progression
         private static bool RegisterUpgradeItems(ExcelDataManager data)
         {
             if (_registered || data == null || data.ItemInfoDict == null || data.ShopGroupDict == null) return _registered;
-            string lootObjectId = SelectPlaceholderLootObjectId(data);
-            if (string.IsNullOrEmpty(lootObjectId))
+            if (Upgrades.Any(upgrade => data.ItemInfoDict.ContainsKey(FirstItemId + upgrade.Index) ||
+                                        data.ShopGroupDict.ContainsKey(FirstShopGroupId + upgrade.Index)))
             {
-                MelonLogger.Error("Upgrade box registration skipped: no valid vanilla item model could be resolved.");
+                MelonLogger.Error("Upgrade registration aborted because a custom item or shop-group ID is already occupied.");
+                return false;
+            }
+
+            if (!TryRegisterUpgradeBoxPrefabs(out string error))
+            {
+                MelonLogger.Error("Upgrade item registration skipped: " + error);
                 return false;
             }
 
@@ -78,17 +85,12 @@ namespace MimesisRework.Progression
             {
                 int itemId = FirstItemId + upgrade.Index;
                 int groupId = FirstShopGroupId + upgrade.Index;
-                if (items.ContainsKey(itemId) || groups.ContainsKey(groupId))
-                {
-                    MelonLogger.Error("Upgrade registration aborted because custom item/group ID is already occupied: " + itemId + "/" + groupId + ".");
-                    return false;
-                }
 
                 var itemData = new ItemConsumable_MasterData
                 {
                     id = itemId,
                     name = NameKey(upgrade.Index),
-                    looting_object_id = lootObjectId,
+                    looting_object_id = upgrade.Stat == "HP" ? HealthBoxLootObjectId : StaminaBoxLootObjectId,
                     vending_machine_tooltip_string = DescriptionKey(upgrade.Index),
                     consume_type = (int)ConsumeItemType.Potion,
                     max_stack_count = 1,
@@ -113,38 +115,257 @@ namespace MimesisRework.Progression
             ItemInfoDictProperty.GetSetMethod(true).Invoke(data, new object[] { items.ToImmutable() });
             ShopGroupDictProperty.GetSetMethod(true).Invoke(data, new object[] { groups.ToImmutable() });
             _registered = true;
-            MelonLogger.Msg("Registered 8 custom consumables and shop groups 19001-19008. All use new item IDs; vanilla rows were left unchanged. Placeholder model row: " + lootObjectId + ".");
+            MelonLogger.Msg("Registered 8 custom consumables and shop groups 19001-19008 with separate health-cross and stamina-lightning box prefabs. Vanilla item rows and loot prefabs were left unchanged.");
             return true;
         }
 
-        private static string SelectPlaceholderLootObjectId(ExcelDataManager data)
+        private static bool TryRegisterUpgradeBoxPrefabs(out string error)
         {
+            error = null;
             object tableManager = TableManagerProperty?.GetValue(Hub.s);
             MMLootingObjectTable table = LootingObjectTableField?.GetValue(tableManager) as MMLootingObjectTable;
-            if (table != null && table.rows != null)
+            if (table == null || table.rows == null)
             {
-                string[] modelHints = { "box", "crate", "case", "package", "container", "supply" };
-                MMLootingObjectTable.Row best = null;
-                int bestScore = 0;
-                foreach (MMLootingObjectTable.Row row in table.rows)
+                error = "the native looting-object table is unavailable.";
+                return false;
+            }
+
+            MMLootingObjectTable.Row existingHealth = table.rows.FirstOrDefault(row => row != null && row.id == HealthBoxLootObjectId);
+            MMLootingObjectTable.Row existingStamina = table.rows.FirstOrDefault(row => row != null && row.id == StaminaBoxLootObjectId);
+            if (existingHealth != null || existingStamina != null)
+            {
+                if (existingHealth?.prefab != null && existingStamina?.prefab != null)
+                    return true;
+                error = "only one custom upgrade-box prefab row is present.";
+                return false;
+            }
+
+            const string cardboardBoxModelId = "miscellnary_cardboardbox";
+            MMLootingObjectTable.Row source = table.rows.FirstOrDefault(row =>
+                row != null && row.id == cardboardBoxModelId && row.prefab != null &&
+                row.prefab.GetComponent<LootingLevelObject>() != null);
+            if (source == null)
+            {
+                error = "the native cardboard-box prefab could not be found.";
+                return false;
+            }
+
+            GameObject healthPrefab = null;
+            GameObject staminaPrefab = null;
+            try
+            {
+                healthPrefab = CreateUpgradeBoxPrefab(source.prefab, true);
+                staminaPrefab = CreateUpgradeBoxPrefab(source.prefab, false);
+                table.rows.Add(CloneLootingObjectRow(source, HealthBoxLootObjectId, healthPrefab));
+                table.rows.Add(CloneLootingObjectRow(source, StaminaBoxLootObjectId, staminaPrefab));
+                MelonLogger.Msg("Created independent upgrade-box prefabs from the native cardboard box; added only custom loot rows.");
+                return true;
+            }
+            catch
+            {
+                if (healthPrefab != null)
+                    UnityEngine.Object.Destroy(healthPrefab);
+                if (staminaPrefab != null)
+                    UnityEngine.Object.Destroy(staminaPrefab);
+                throw;
+            }
+        }
+
+        private static MMLootingObjectTable.Row CloneLootingObjectRow(
+            MMLootingObjectTable.Row source, string id, GameObject prefab)
+        {
+            return new MMLootingObjectTable.Row
+            {
+                id = id,
+                prefab = prefab,
+                iconSpriteId = source.iconSpriteId,
+                posterIconSpriteId = source.posterIconSpriteId,
+                pickAudioClipId = source.pickAudioClipId,
+                dropAudioClipId = source.dropAudioClipId
+            };
+        }
+
+        private static GameObject CreateUpgradeBoxPrefab(GameObject source, bool healthBox)
+        {
+            GameObject staging = new GameObject("MimesisRework_UpgradeBox_Staging");
+            staging.SetActive(false);
+            GameObject prefab = UnityEngine.Object.Instantiate(source, staging.transform, false);
+            prefab.name = healthBox ? "MimesisRework_HealthUpgradeBox" : "MimesisRework_StaminaUpgradeBox";
+            AddUpgradeBadge(prefab, healthBox);
+            prefab.transform.SetParent(null, false);
+            UnityEngine.Object.Destroy(staging);
+            UnityEngine.Object.DontDestroyOnLoad(prefab);
+            return prefab;
+        }
+
+        private static void AddUpgradeBadge(GameObject prefab, bool healthBox)
+        {
+            Renderer[] renderers = prefab.GetComponentsInChildren<Renderer>(true);
+            Bounds bounds = default(Bounds);
+            bool hasBounds = false;
+            Matrix4x4 rootInverse = prefab.transform.worldToLocalMatrix;
+            foreach (Renderer renderer in renderers)
+            {
+                if (renderer == null)
+                    continue;
+                Bounds localBounds = renderer.localBounds;
+                for (int mask = 0; mask < 8; mask++)
                 {
-                    if (row == null || row.prefab == null || string.IsNullOrEmpty(row.id) || row.prefab.GetComponent<LootingLevelObject>() == null) continue;
-                    string candidate = (row.id + " " + row.prefab.name).ToLowerInvariant();
-                    int score = modelHints.Count(hint => candidate.Contains(hint));
-                    if (score > bestScore) { best = row; bestScore = score; }
-                }
-                if (best != null)
-                {
-                    MelonLogger.Msg("Using existing box-like item prefab as a temporary visual for upgrade boxes: " + best.id + "/" + best.prefab.name + ".");
-                    return best.id;
+                    Vector3 corner = localBounds.center + Vector3.Scale(localBounds.extents, new Vector3(
+                        (mask & 1) == 0 ? -1f : 1f,
+                        (mask & 2) == 0 ? -1f : 1f,
+                        (mask & 4) == 0 ? -1f : 1f));
+                    Vector3 rootPoint = rootInverse.MultiplyPoint3x4(renderer.transform.TransformPoint(corner));
+                    if (!hasBounds)
+                    {
+                        bounds = new Bounds(rootPoint, Vector3.zero);
+                        hasBounds = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(rootPoint);
+                    }
                 }
             }
 
-            ItemMasterInfo fallback = data.GetItemInfo(PlaceholderModelSourceItemId);
-            if (fallback != null && !string.IsNullOrEmpty(fallback.LootingObjectID)) return fallback.LootingObjectID;
-            foreach (ItemMasterInfo item in data.ItemInfoDict.Values)
-                if (item != null && !string.IsNullOrEmpty(item.LootingObjectID)) return item.LootingObjectID;
-            return null;
+            if (!hasBounds)
+                throw new InvalidOperationException("Native cardboard box has no renderable geometry.");
+
+            int normalAxis = SmallestAxis(bounds.size);
+            int uAxis = (normalAxis + 1) % 3;
+            int vAxis = (normalAxis + 2) % 3;
+            float iconSize = Mathf.Min(Axis(bounds.size, uAxis), Axis(bounds.size, vAxis)) * 0.48f;
+            if (iconSize <= 0.005f)
+                throw new InvalidOperationException("Native cardboard box is too small for an upgrade badge.");
+
+            Vector3 faceCenter = bounds.center;
+            SetAxis(ref faceCenter, normalAxis, Axis(bounds.center, normalAxis) + Axis(bounds.extents, normalAxis) + 0.001f);
+            Material sourceMaterial = renderers.First(renderer => renderer != null && renderer.sharedMaterial != null).sharedMaterial;
+            Material badgeMaterial = CreateBadgeMaterial(sourceMaterial, new Color(0.055f, 0.052f, 0.044f, 1f));
+            Material symbolMaterial = CreateBadgeMaterial(sourceMaterial,
+                healthBox ? new Color(0.18f, 0.62f, 0.32f, 1f) : new Color(0.96f, 0.7f, 0.16f, 1f));
+
+            float thickness = Mathf.Max(0.0015f, iconSize * 0.035f);
+            float halfBadge = iconSize * 0.62f;
+            AddBadgeBar(prefab.transform, uAxis, vAxis, normalAxis, faceCenter,
+                -halfBadge, halfBadge, -halfBadge, halfBadge, thickness, badgeMaterial, "Dark badge backing");
+
+            float halfSymbol = iconSize * 0.40f;
+            float barHalfWidth = iconSize * 0.075f;
+            if (healthBox)
+            {
+                AddBadgeBar(prefab.transform, uAxis, vAxis, normalAxis, faceCenter,
+                    -halfSymbol, halfSymbol, -barHalfWidth, barHalfWidth, thickness * 1.2f, symbolMaterial, "Health cross horizontal");
+                AddBadgeBar(prefab.transform, uAxis, vAxis, normalAxis, faceCenter,
+                    -barHalfWidth, barHalfWidth, -halfSymbol, halfSymbol, thickness * 1.2f, symbolMaterial, "Health cross vertical");
+            }
+            else
+            {
+                AddBadgeSegment(prefab.transform, uAxis, vAxis, normalAxis, faceCenter,
+                    new Vector2(-0.12f, 0.40f) * iconSize, new Vector2(0.10f, 0.10f) * iconSize, barHalfWidth, thickness * 1.2f, symbolMaterial, "Stamina bolt upper");
+                AddBadgeSegment(prefab.transform, uAxis, vAxis, normalAxis, faceCenter,
+                    new Vector2(0.10f, 0.10f) * iconSize, new Vector2(-0.08f, 0.10f) * iconSize, barHalfWidth, thickness * 1.2f, symbolMaterial, "Stamina bolt middle");
+                AddBadgeSegment(prefab.transform, uAxis, vAxis, normalAxis, faceCenter,
+                    new Vector2(-0.08f, 0.10f) * iconSize, new Vector2(0.12f, -0.42f) * iconSize, barHalfWidth, thickness * 1.2f, symbolMaterial, "Stamina bolt lower");
+            }
+        }
+
+        private static Material CreateBadgeMaterial(Material source, Color color)
+        {
+            Material material = new Material(source);
+            material.name = source.name + "_MimesisUpgradeBadge";
+            if (material.HasProperty("_BaseColor"))
+                material.SetColor("_BaseColor", color);
+            if (material.HasProperty("_Color"))
+                material.SetColor("_Color", color);
+            return material;
+        }
+
+        private static void AddBadgeBar(
+            Transform parent, int uAxis, int vAxis, int normalAxis, Vector3 center,
+            float minU, float maxU, float minV, float maxV, float thickness, Material material, string name)
+        {
+            Vector2 start = new Vector2(minU, (minV + maxV) * 0.5f);
+            Vector2 end = new Vector2(maxU, (minV + maxV) * 0.5f);
+            Vector2 perpendicular = new Vector2(0f, (maxV - minV) * 0.5f);
+            AddBadgeMesh(parent, uAxis, vAxis, normalAxis, center, start, end, perpendicular, thickness, material, name, minV, maxV);
+        }
+
+        private static void AddBadgeSegment(
+            Transform parent, int uAxis, int vAxis, int normalAxis, Vector3 center,
+            Vector2 start, Vector2 end, float halfWidth, float thickness, Material material, string name)
+        {
+            Vector2 direction = (end - start).normalized;
+            Vector2 perpendicular = new Vector2(-direction.y, direction.x) * halfWidth;
+            AddBadgeMesh(parent, uAxis, vAxis, normalAxis, center, start, end, perpendicular, thickness, material, name, 0f, 0f);
+        }
+
+        private static void AddBadgeMesh(
+            Transform parent, int uAxis, int vAxis, int normalAxis, Vector3 center,
+            Vector2 start, Vector2 end, Vector2 perpendicular, float thickness,
+            Material material, string name, float minV, float maxV)
+        {
+            if (minV != maxV)
+            {
+                start = new Vector2(start.x, (minV + maxV) * 0.5f);
+                end = new Vector2(end.x, (minV + maxV) * 0.5f);
+            }
+
+            Vector2[] corners =
+            {
+                start + perpendicular, end + perpendicular,
+                end - perpendicular, start - perpendicular
+            };
+            Vector3[] vertices = new Vector3[8];
+            for (int i = 0; i < 4; i++)
+            {
+                Vector3 point = center;
+                SetAxis(ref point, uAxis, Axis(center, uAxis) + corners[i].x);
+                SetAxis(ref point, vAxis, Axis(center, vAxis) + corners[i].y);
+                vertices[i] = point;
+                vertices[i + 4] = point + AxisVector(normalAxis) * thickness;
+            }
+
+            Mesh mesh = new Mesh { name = name };
+            mesh.vertices = vertices;
+            mesh.triangles = new[]
+            {
+                0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5,
+                2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+                4, 5, 6, 4, 6, 7, 3, 2, 1, 3, 1, 0
+            };
+            mesh.RecalculateNormals();
+
+            GameObject badge = new GameObject(name);
+            badge.layer = parent.gameObject.layer;
+            badge.transform.SetParent(parent, false);
+            MeshFilter filter = badge.AddComponent<MeshFilter>();
+            filter.sharedMesh = mesh;
+            MeshRenderer renderer = badge.AddComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+        }
+
+        private static int SmallestAxis(Vector3 size)
+        {
+            if (size.x <= size.y && size.x <= size.z) return 0;
+            return size.y <= size.z ? 1 : 2;
+        }
+
+        private static float Axis(Vector3 vector, int axis)
+        {
+            return axis == 0 ? vector.x : axis == 1 ? vector.y : vector.z;
+        }
+
+        private static void SetAxis(ref Vector3 vector, int axis, float value)
+        {
+            if (axis == 0) vector.x = value;
+            else if (axis == 1) vector.y = value;
+            else vector.z = value;
+        }
+
+        private static Vector3 AxisVector(int axis)
+        {
+            return axis == 0 ? Vector3.right : axis == 1 ? Vector3.up : Vector3.forward;
         }
 
         private static string NameKey(int index) => "MIMESIS_REWORK_UPGRADE_NAME_" + index;

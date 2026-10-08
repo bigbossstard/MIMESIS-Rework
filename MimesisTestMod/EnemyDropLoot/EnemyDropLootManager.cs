@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 using MelonLoader;
 using Bifrost.ConstEnum;
@@ -14,10 +15,20 @@ namespace MimesisTestMod.EnemyDropLoot
 {
     internal static class EnemyDropLootManager
     {
+        private const int RamblamMasterId = 20000011;
+        private const int RamblamShotgunItemMasterId = 1002;
+        private const int RamblamShotgunMagazineCapacity = 5;
+        private const int VanillaShotgunItemMasterId = 1000;
         private static readonly List<RandomSpawnedItemActorData> LootSources = new List<RandomSpawnedItemActorData>();
         private static readonly List<int> FallbackItemIds = new List<int>();
+        private static readonly FieldInfo ItemNameField = AccessTools.Field(typeof(ItemMasterInfo), nameof(ItemMasterInfo.Name));
+        private static readonly FieldInfo MaxGaugeField = AccessTools.Field(typeof(ItemEquipmentInfo), nameof(ItemEquipmentInfo.MaxGauge));
+        private static readonly FieldInfo InitialGaugeField = AccessTools.Field(typeof(ItemEquipmentInfo), nameof(ItemEquipmentInfo.InitialGauge));
+        private static readonly FieldInfo MinDurabilityField = AccessTools.Field(typeof(ItemEquipmentInfo), nameof(ItemEquipmentInfo.MinDurability));
+        private static readonly FieldInfo MaxDurabilityField = AccessTools.Field(typeof(ItemEquipmentInfo), nameof(ItemEquipmentInfo.MaxDurability));
         private static IVroom _activeRoom;
         private static bool _hasActiveRoom;
+        private static ItemEquipmentInfo _configuredRamblamShotgun;
 
         internal static void Reset()
         {
@@ -71,7 +82,16 @@ namespace MimesisTestMod.EnemyDropLoot
 
         internal static void TryHandleMonsterDeath(VMonster monster)
         {
-            if (!EnemyDropLootPreferences.Enabled || FallbackItemIds.Count == 0 || !_hasActiveRoom || monster.VRoom != _activeRoom)
+            if (monster.MasterID == RamblamMasterId)
+            {
+                MelonLogger.Msg("MIMESIS Rework: Ramblam death observed in loot handler.");
+                if (!CanSpawnRamblamDrop(monster))
+                    return;
+                TrySpawnLoot(monster, RamblamShotgunItemMasterId);
+                return;
+            }
+
+            if (!EnemyDropLootPreferences.Enabled || !_hasActiveRoom || monster.VRoom != _activeRoom)
                 return;
 
             var pdata = AccessTools.Field(typeof(Hub), "pdata")?.GetValue(Hub.s) as Hub.PersistentData;
@@ -83,9 +103,11 @@ namespace MimesisTestMod.EnemyDropLoot
             if (info == null)
                 return;
 
-            // VMonster.OnDying already handles the game's configured ItemDropMasterID. Do not
-            // stack a second mod reward on top of that native drop (currently BabyRilla uses it).
+            // VMonster.OnDying already handles native drops. Do not stack a second mod reward.
             if (info.ItemDropMasterID != 0)
+                return;
+
+            if (FallbackItemIds.Count == 0)
                 return;
 
             float chance = GetThreatDropChance(info) * EnemyDropLootPreferences.DropChance;
@@ -95,6 +117,55 @@ namespace MimesisTestMod.EnemyDropLoot
                 if (TryPickItem(out int itemMasterId))
                     TrySpawnLoot(monster, itemMasterId);
             }
+        }
+
+        private static bool CanSpawnRamblamDrop(VMonster monster)
+        {
+            if (!EnemyDropLootPreferences.Enabled)
+            {
+                MelonLogger.Warning("MIMESIS Rework: skipped Ramblam shotgun drop because enemy drops are disabled.");
+                return false;
+            }
+            if (!_hasActiveRoom || monster.VRoom != _activeRoom)
+            {
+                MelonLogger.Warning("MIMESIS Rework: skipped Ramblam shotgun drop because its dungeon room is not active.");
+                return false;
+            }
+
+            var pdata = AccessTools.Field(typeof(Hub), "pdata")?.GetValue(Hub.s) as Hub.PersistentData;
+            if (pdata == null || pdata.ClientMode != NetworkClientMode.Host)
+            {
+                MelonLogger.Warning("MIMESIS Rework: skipped Ramblam shotgun drop because this client is not the host.");
+                return false;
+            }
+            return true;
+        }
+
+        internal static void ConfigureRamblamShotgun(ItemMasterInfo itemInfo, ExcelDataManager excelDataManager)
+        {
+            if (!(itemInfo is ItemEquipmentInfo shotgunInfo) || shotgunInfo.MasterID != RamblamShotgunItemMasterId)
+                return;
+            if (ReferenceEquals(_configuredRamblamShotgun, shotgunInfo))
+                return;
+
+            ItemEquipmentInfo vanillaShotgun = excelDataManager.GetItemInfo(VanillaShotgunItemMasterId) as ItemEquipmentInfo;
+            SetField(ItemNameField, shotgunInfo, "Alexa", nameof(ItemMasterInfo.Name));
+            SetField(MaxGaugeField, shotgunInfo, RamblamShotgunMagazineCapacity, nameof(ItemEquipmentInfo.MaxGauge));
+            SetField(InitialGaugeField, shotgunInfo, RamblamShotgunMagazineCapacity, nameof(ItemEquipmentInfo.InitialGauge));
+            if (vanillaShotgun != null)
+            {
+                SetField(MinDurabilityField, shotgunInfo, vanillaShotgun.MinDurability, nameof(ItemEquipmentInfo.MinDurability));
+                SetField(MaxDurabilityField, shotgunInfo, vanillaShotgun.MaxDurability, nameof(ItemEquipmentInfo.MaxDurability));
+            }
+            _configuredRamblamShotgun = shotgunInfo;
+            MelonLogger.Msg("MIMESIS Rework: configured Ramblam shotgun (item 1002): 5-round magazine.");
+        }
+
+        private static void SetField(FieldInfo field, object target, object value, string fieldName)
+        {
+            if (field == null)
+                throw new MissingFieldException(target.GetType().FullName, fieldName);
+            field.SetValue(target, value);
         }
 
         private static float GetThreatDropChance(MonsterInfo info)
@@ -140,7 +211,10 @@ namespace MimesisTestMod.EnemyDropLoot
         {
             ItemElement itemElement = monster.VRoom.GetNewItemElement(itemMasterId, false);
             if (itemElement == null)
+            {
+                MelonLogger.Warning("MIMESIS Rework: could not create loot item {0} for monster {1}.", itemMasterId, monster.MasterID);
                 return false;
+            }
 
             Vector3 spawnPos = monster.PositionVector;
             Vector3 nearestPos = spawnPos;
@@ -162,7 +236,7 @@ namespace MimesisTestMod.EnemyDropLoot
                 MelonLogger.Warning("MIMESIS Rework: failed to spawn loot item {0} for monster {1}.", itemMasterId, monster.MasterID);
                 return false;
             }
-            MelonLogger.Msg("MIMESIS Rework: monster {0} ({1}) dropped item {2}.", monster.ActorName, monster.MasterID, itemMasterId);
+            MelonLogger.Msg("MIMESIS Rework: monster {0} ({1}) dropped item {2}; fake={3}.", monster.ActorName, monster.MasterID, itemMasterId, itemElement.IsFake);
             return true;
         }
 

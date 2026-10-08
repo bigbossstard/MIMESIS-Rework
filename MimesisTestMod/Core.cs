@@ -27,6 +27,7 @@ namespace MimesisTestMod
         internal static bool InfiniteMoneyEnabled { get; private set; }
         internal static bool InfiniteHPEnabled { get; private set; }
         internal static bool InfiniteShotgunChargeEnabled { get; private set; }
+        private const int RamblamShotgunItemMasterId = 1002;
 
         public override void OnInitializeMelon()
         {
@@ -49,7 +50,7 @@ namespace MimesisTestMod
             if (!_showPanel)
                 return;
 
-            GUI.Box(new Rect(20f, 20f, 420f, 292f), "MIMESIS REWORK TEST MOD");
+            GUI.Box(new Rect(20f, 20f, 420f, 328f), "MIMESIS REWORK TEST MOD");
             GUI.Label(new Rect(35f, 50f, 390f, 24f), "Test mod is active");
             GUI.Label(new Rect(35f, 72f, 390f, 20f), "F8: toggle panel | controls require host");
             if (GUI.Button(new Rect(35f, 98f, 185f, 30f), "Spawn random monster"))
@@ -64,9 +65,11 @@ namespace MimesisTestMod
                 RunDevAction(GiveShotgun);
             if (GUI.Button(new Rect(230f, 170f, 185f, 30f), InfiniteHPEnabled ? "Disable infinite HP" : "Enable infinite HP"))
                 RunDevAction(ToggleInfiniteHP);
-            GUI.Label(new Rect(35f, 206f, 390f, 35f), _devStatus);
-            GUI.Label(new Rect(35f, 243f, 390f, 20f), "Feature modules load independently");
-            GUI.Label(new Rect(35f, 266f, 390f, 20f), "Loaded: " + (Time.realtimeSinceStartup - _loadedAt).ToString("0.0") + " s ago");
+            if (GUI.Button(new Rect(35f, 206f, 185f, 30f), "Ramblam shotgun"))
+                RunDevAction(GiveRamblamShotgun);
+            GUI.Label(new Rect(35f, 242f, 390f, 35f), _devStatus);
+            GUI.Label(new Rect(35f, 279f, 390f, 20f), "Feature modules load independently");
+            GUI.Label(new Rect(35f, 302f, 390f, 20f), "Loaded: " + (Time.realtimeSinceStartup - _loadedAt).ToString("0.0") + " s ago");
         }
 
         private void RunDevAction(Action<IVroom, VPlayer> action)
@@ -231,6 +234,35 @@ namespace MimesisTestMod
             player.InventoryControlUnit.HandleChangeActiveInvenSlot(slot, true, 0);
             InfiniteShotgunChargeEnabled = true;
             _devStatus = "Shotgun added and its charge is now infinite.";
+        }
+
+        private void GiveRamblamShotgun(IVroom room, VPlayer player)
+        {
+            DataManager dataManager = AccessTools.Property(typeof(Hub), "dataman")?.GetValue(Hub.s) as DataManager;
+            ItemMasterInfo info = dataManager?.ExcelDataManager?.GetItemInfo(RamblamShotgunItemMasterId);
+            if (!(info is ItemEquipmentInfo))
+            {
+                _devStatus = "Ramblam shotgun item (ID 1002) was not found.";
+                return;
+            }
+
+            ItemElement item = room.GetNewItemElement(RamblamShotgunItemMasterId, false, 1, 0, 5, 0);
+            if (item == null)
+            {
+                _devStatus = "Game failed to create the Ramblam shotgun.";
+                return;
+            }
+
+            int slot;
+            MsgErrorCode result = player.InventoryControlUnit.HandleAddItem(item, out slot, true, false);
+            if (result != MsgErrorCode.Success)
+            {
+                _devStatus = "Could not give Ramblam shotgun: " + result + ". Make room in your inventory.";
+                return;
+            }
+
+            player.InventoryControlUnit.HandleChangeActiveInvenSlot(slot, true, 0);
+            _devStatus = "Ramblam shotgun (Alexa) added with 5 shells.";
         }
 
         private void ToggleInfiniteHP(IVroom room, VPlayer player)
