@@ -10,6 +10,7 @@ using Bifrost.ItemConsumable;
 using Bifrost.ShopGroup;
 using HarmonyLib;
 using MelonLoader;
+using Mimic.Actors;
 using ReluProtocol;
 using ReluProtocol.Enum;
 using ReluNetwork.ConstEnum;
@@ -51,6 +52,9 @@ namespace MimesisRework.Progression
         private static UIPrefab_InGame _hpReadoutOwner;
         private static TMP_Text _hpReadout;
         private static long _lastLoggedHpMaximum = long.MinValue;
+        private static int _hpReadoutOverrideActorId = -1;
+        private static long _hpReadoutOverrideMaximum = long.MinValue;
+        private static float _hpReadoutOverrideExpiresAt;
 
         public override void OnInitializeMelon()
         {
@@ -201,6 +205,7 @@ namespace MimesisRework.Progression
                 var recalculatedStats = new StatCollection();
                 player.StatControlUnit.GetStatCollection(ref recalculatedStats);
                 long newMaximum = player.StatControlUnit.GetSpecificStatValue(statType);
+                SetLocalHpReadoutMaximum(player, newMaximum);
                 MelonLogger.Msg("Consumed upgrade item " + itemId + ": HP max " + maxBefore + "→" + newMaximum + " (growth +" + amount + ", " + upgrade.Percent + "% base; request=" + hashCode + ").");
             }
             else
@@ -296,6 +301,38 @@ namespace MimesisRework.Progression
             catch (Exception ex) { MelonLogger.Warning("Native HP readout could not be updated: " + ex.Message); }
         }
 
+        private static void SetLocalHpReadoutMaximum(VPlayer player, long maximum)
+        {
+            ProtoActor avatar = Hub.Main?.GetMyAvatar();
+            if (player == null || avatar == null || avatar.ActorID != player.ObjectID) return;
+            _hpReadoutOverrideActorId = player.ObjectID;
+            _hpReadoutOverrideMaximum = maximum;
+            _hpReadoutOverrideExpiresAt = Time.realtimeSinceStartup + 5f;
+            if (_hpReadoutOwner != null)
+                UpdateHpReadout(_hpReadoutOwner, player.StatControlUnit.GetCurrentHP(), maximum);
+        }
+
+        private static long GetHpReadoutMaximum(UIPrefab_InGame ui, long receivedMaximum)
+        {
+            if (_hpReadoutOverrideActorId < 0 || Time.realtimeSinceStartup > _hpReadoutOverrideExpiresAt)
+            {
+                _hpReadoutOverrideActorId = -1;
+                _hpReadoutOverrideMaximum = long.MinValue;
+                return receivedMaximum;
+            }
+
+            ProtoActor avatar = Hub.Main?.GetMyAvatar();
+            if (avatar == null || avatar.ActorID != _hpReadoutOverrideActorId)
+                return receivedMaximum;
+            if (receivedMaximum >= _hpReadoutOverrideMaximum)
+            {
+                _hpReadoutOverrideActorId = -1;
+                _hpReadoutOverrideMaximum = long.MinValue;
+                return receivedMaximum;
+            }
+            return _hpReadoutOverrideMaximum;
+        }
+
         private static string FormatHp(long raw)
         {
             return raw.ToString("N0", CultureInfo.InvariantCulture);
@@ -313,7 +350,10 @@ namespace MimesisRework.Progression
         [HarmonyPatch(typeof(UIPrefab_InGame), nameof(UIPrefab_InGame.OnHpChanged))]
         private static class NativeHpReadoutPatch
         {
-            private static void Postfix(UIPrefab_InGame __instance, long curr, long maxHP) => UpdateHpReadout(__instance, curr, maxHP);
+            private static void Postfix(UIPrefab_InGame __instance, long curr, long maxHP)
+            {
+                UpdateHpReadout(__instance, curr, GetHpReadoutMaximum(__instance, maxHP));
+            }
         }
 
         [HarmonyPatch(typeof(StatController), nameof(StatController.ConsumeStamina))]
