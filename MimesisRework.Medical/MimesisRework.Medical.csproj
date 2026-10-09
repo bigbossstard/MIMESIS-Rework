@@ -4,6 +4,7 @@
     <Compile Include="..\MimesisRework.Shared\HostRoom.cs" Link="HostRoom.cs" />
     <Reference Include="MelonLoader"><HintPath>$(MIMESIS_DIR)\MelonLoader\net35\MelonLoader.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(MIMESIS_DIR)\MIMESIS_Data\Managed\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(MIMESIS_DIR)\MIMESIS_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(MIMESIS_DIR)\MIMESIS_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Assembly-CSharp"><HintPath>$(MIMESIS_DIR)\MIMESIS_Data\Managed\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(MIMESIS_DIR)\MelonLoader\net35\0Harmony.dll</HintPath><Private>false</Private></Reference>

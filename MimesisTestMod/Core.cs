@@ -50,7 +50,7 @@ namespace MimesisTestMod
             if (!_showPanel)
                 return;
 
-            GUI.Box(new Rect(20f, 20f, 420f, 328f), "MIMESIS REWORK TEST MOD");
+            GUI.Box(new Rect(20f, 20f, 420f, 364f), "MIMESIS REWORK TEST MOD");
             GUI.Label(new Rect(35f, 50f, 390f, 24f), "Test mod is active");
             GUI.Label(new Rect(35f, 72f, 390f, 20f), "F8: toggle panel | controls require host");
             if (GUI.Button(new Rect(35f, 98f, 185f, 30f), "Spawn random monster"))
@@ -67,9 +67,11 @@ namespace MimesisTestMod
                 RunDevAction(ToggleInfiniteHP);
             if (GUI.Button(new Rect(35f, 206f, 185f, 30f), "Ramblam shotgun"))
                 RunDevAction(GiveRamblamShotgun);
-            GUI.Label(new Rect(35f, 242f, 390f, 35f), _devStatus);
-            GUI.Label(new Rect(35f, 279f, 390f, 20f), "Feature modules load independently");
-            GUI.Label(new Rect(35f, 302f, 390f, 20f), "Loaded: " + (Time.realtimeSinceStartup - _loadedAt).ToString("0.0") + " s ago");
+            if (GUI.Button(new Rect(35f, 242f, 185f, 30f), "HP juice"))
+                RunDevAction(GiveHPJuice);
+            GUI.Label(new Rect(35f, 278f, 390f, 35f), _devStatus);
+            GUI.Label(new Rect(35f, 315f, 390f, 20f), "Feature modules load independently");
+            GUI.Label(new Rect(35f, 338f, 390f, 20f), "Loaded: " + (Time.realtimeSinceStartup - _loadedAt).ToString("0.0") + " s ago");
         }
 
         private void RunDevAction(Action<IVroom, VPlayer> action)
@@ -263,6 +265,40 @@ namespace MimesisTestMod
 
             player.InventoryControlUnit.HandleChangeActiveInvenSlot(slot, true, 0);
             _devStatus = "Ramblam shotgun (Alexa) added with 5 shells.";
+        }
+
+        private void GiveHPJuice(IVroom room, VPlayer player)
+        {
+            const int hpJuiceMasterId = 3104;
+            DataManager dataManager = AccessTools.Property(typeof(Hub), "dataman")?.GetValue(Hub.s) as DataManager;
+            ItemMasterInfo info = dataManager?.ExcelDataManager?.GetItemInfo(hpJuiceMasterId);
+            if (info == null || info.ItemType != ItemType.Consumable)
+            {
+                _devStatus = "HP juice item (ID 3104) was not found.";
+                LoggerInstance.Warning("HP juice spawn failed: consumable item 3104 was not found.");
+                return;
+            }
+
+            ItemElement item = room.GetNewItemElement(hpJuiceMasterId, false, 1, 0, 0, 0);
+            if (item == null)
+            {
+                _devStatus = "Game failed to create the HP juice item.";
+                LoggerInstance.Warning("HP juice spawn failed: GetNewItemElement returned null for item 3104.");
+                return;
+            }
+
+            int slot;
+            MsgErrorCode result = player.InventoryControlUnit.HandleAddItem(item, out slot, true, false);
+            if (result != MsgErrorCode.Success)
+            {
+                _devStatus = "Could not give HP juice: " + result + ". Make room in your inventory.";
+                LoggerInstance.Warning("HP juice spawn failed: inventory rejected item 3104 with " + result + ".");
+                return;
+            }
+
+            player.InventoryControlUnit.HandleChangeActiveInvenSlot(slot, true, 0);
+            _devStatus = "HP juice (item 3104) added to inventory.";
+            LoggerInstance.Msg("HP juice item 3104 added to player " + player.ObjectID + " in slot " + slot + ".");
         }
 
         private void ToggleInfiniteHP(IVroom room, VPlayer player)
